@@ -31,7 +31,7 @@ Metehan Küçükçakır
 #### https://github.com/MicrosoftDocs/mslearn-aks-workshop-ratings-api
 ### ratings-web
 #### https://github.com/MicrosoftDocs/mslearn-aks-workshop-ratings-web
-## Kaynak Kod 1- AKS Kurulumu
+## 1- AKS Kurulumu
 #### Geliştirici ekip uygulamalar halihazırda container yapısı kullanıyor. Süreçleri hızlandırmak, yönetmek ve esnek bir şekilde büyüyüp küçülmesini sağlamak için AKS kullanılması isteniyor. Bu bölümde;
 ##### Resource Group oluşturulacak
 ##### Cluster networkü şekillendirilecek
@@ -40,5 +40,134 @@ Metehan Küçükçakır
 ##### Namespace oluşturulacak
 ### Resource Group Oluşturulması
 #### 1- Windows terminal aracılığıyla Cloud Shell'e bağlanmak
-#### 2- 
+#### 2- Değişkenlerin tanımlanması
+REGION_NAME=westeurope
 
+RESOURCE_GROUP=appmo-demo-rg
+
+SUBNET_NAME=aks-subnet
+
+VNET_NAME=aks-vnet
+#### 3- Resource Group'un oluşturulması
+az group create --name $RESOURCE_GROUP --location $REGION_NAME
+### Networkun oluşturulması
+#### Kubenet Network nedir?
+Kubenet, kubernetes'in default network modelidir. Kubenet network ile AKS nodeları Azure Virtual Network subnetinden bir IP adresi alırlar. Podlar AKS içinde oluşan farklı bir networkten ip alırlar ve AKS dışındaki kaynaklara erişirken NAT ile erişirler.
+#### CNI Network nedir?
+CNI, AKS clusterının doğrudan Azure Virtual Network'e bağlı olduğu, her podun doğrudan vnetten bir ip aldığı yapıdır. Kubenet'e göre daha gelişmiş, daha yönetilebilir bir network yapısıdır.
+
+##### Virtual Network oluşturma
+az network vnet create \
+    --resource-group $RESOURCE_GROUP \
+    --location $REGION_NAME \
+    --name $VNET_NAME \
+    --address-prefixes 10.0.0.0/8 \
+    --subnet-name $SUBNET_NAME \
+    --subnet-prefixes 10.240.0.0/16
+ ##### Subnet ID'sini öğrenme
+ SUBNET_ID=$(az network vnet subnet show \
+    --resource-group $RESOURCE_GROUP \
+    --vnet-name $VNET_NAME \
+    --name $SUBNET_NAME \
+    --query id -o tsv)
+### AKS Clusterının oluşturulması
+#### Kubernetes versiyon kontrolü
+VERSION=$(az aks get-versions \
+    --location $REGION_NAME \
+    --query 'orchestrators[?!isPreview] | [-1].orchestratorVersion' \
+    --output tsv)
+#### Cluster isminin tanımlanması
+AKS_CLUSTER_NAME=aksworkshop-$RANDOM
+#### Cluster isim kontrolü
+echo $AKS_CLUSTER_NAME
+#### Clusterın oluşturulması
+az aks create \
+--resource-group $RESOURCE_GROUP \
+--name $AKS_CLUSTER_NAME \
+--vm-set-type VirtualMachineScaleSets \
+--node-count 2 \
+--load-balancer-sku standard \
+--location $REGION_NAME \
+--kubernetes-version $VERSION \
+--network-plugin azure \
+--vnet-subnet-id $SUBNET_ID \
+--service-cidr 10.2.0.0/24 \
+--dns-service-ip 10.2.0.10 \
+--docker-bridge-address 172.17.0.1/16 \
+--generate-ssh-keys
+### Clustera bağlanma
+#### Bağlantı bilgilerini tanımlama
+az aks get-credentials \
+    --resource-group $RESOURCE_GROUP \
+    --name $AKS_CLUSTER_NAME
+#### Bağlantı kontrolü
+kubectl get nodes
+### Namespace oluşturma
+kubectl get namespace
+
+kubectl create namespace ratingsapp
+
+## 2- Container Registry Oluşturulması
+#### ACR ismi oluşturma
+ACR_NAME=acr$RANDOM
+#### ACR oluşturma
+az acr create \
+    --resource-group $RESOURCE_GROUP \
+    --location $REGION_NAME \
+    --name $ACR_NAME \
+    --sku Standard
+#### Uygulamaların ACR ile build edilmesi
+##### API
+git clone https://github.com/MicrosoftDocs/mslearn-aks-workshop-ratings-api.git
+
+cd mslearn-aks-workshop-ratings-api
+
+az acr build \
+    --resource-group $RESOURCE_GROUP \
+    --registry $ACR_NAME \
+    --image ratings-api:v1 .
+##### WEB
+cd ~
+
+git clone https://github.com/MicrosoftDocs/mslearn-aks-workshop-ratings-web.git
+
+cd mslearn-aks-workshop-ratings-web
+
+az acr build \
+    --resource-group $RESOURCE_GROUP \
+    --registry $ACR_NAME \
+    --image ratings-web:v1 .
+##### İmajların kontrolü
+az acr repository list \
+    --name $ACR_NAME \
+    --output table
+#### AKS-ACR arasındaki erişimin tanımlanması
+az aks update \
+    --name $AKS_CLUSTER_NAME \
+    --resource-group $RESOURCE_GROUP \
+    --attach-acr $ACR_NAME
+
+## MongoDB'nin Oluşturulması
+### Deployment
+helm repo add bitnami https://charts.bitnami.com/bitnami
+
+helm search repo bitnami
+
+helm install ratings bitnami/mongodb \
+    --namespace ratingsapp \
+    --set auth.username=<username>,auth.password=<password>,auth.database=ratingsdb
+
+### Kubernetes secreti
+kubectl create secret generic mongosecret \
+    --namespace ratingsapp \
+    --from-literal=MONGOCONNECTION="mongodb://<username>:<password>@ratings-mongodb.ratingsapp:27017/ratingsdb"
+
+## API'ın Deploy Edilmesi
+### Deployment yaml dosyasının oluşturulması
+nano ratings-api-deployment.yaml
+  
+[ratings-api-deployment.yaml](ratings-api-deployment.yaml)
+### Deployment
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-api-deployment.yaml
