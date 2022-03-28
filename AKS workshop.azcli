@@ -1,0 +1,253 @@
+REGION_NAME=westeurope
+RESOURCE_GROUP=appmo-demo-rg
+SUBNET_NAME=aks-subnet
+VNET_NAME=aks-vnet
+
+
+# create resource group
+az group create --name $RESOURCE_GROUP --location $REGION_NAME
+
+#create a virtual network and subnet
+az network vnet create \
+    --resource-group $RESOURCE_GROUP \
+    --location $REGION_NAME \
+    --name $VNET_NAME \
+    --address-prefixes 10.0.0.0/8 \
+    --subnet-name $SUBNET_NAME \
+    --subnet-prefixes 10.240.0.0/16
+#retrieve, and store the subnet ID in a Bash variable
+SUBNET_ID=$(az network vnet subnet show \
+    --resource-group $RESOURCE_GROUP \
+    --vnet-name $VNET_NAME \
+    --name $SUBNET_NAME \
+    --query id -o tsv)
+
+#create your new cluster
+    #get versions
+    VERSION=$(az aks get-versions \
+--location $REGION_NAME \
+--query 'orchestrators[?!isPreview] | [-1].orchestratorVersion' \
+--output tsv)
+    #AKS cluster name must be unique / create unique name
+AKS_CLUSTER_NAME=aksworkshop-$RANDOM
+echo $AKS_CLUSTER_NAME
+    #create the cluster
+az aks create \
+--resource-group $RESOURCE_GROUP \
+--name $AKS_CLUSTER_NAME \
+--vm-set-type VirtualMachineScaleSets \
+--node-count 2 \
+--load-balancer-sku standard \
+--location $REGION_NAME \
+--kubernetes-version $VERSION \
+--network-plugin azure \
+--vnet-subnet-id $SUBNET_ID \
+--service-cidr 10.2.0.0/24 \
+--dns-service-ip 10.2.0.10 \
+--docker-bridge-address 172.17.0.1/16 \
+--generate-ssh-keys
+            #system assigned identity kullanuılsın mı diye soruyor
+
+#Retrieve the cluster credentials
+az aks get-credentials \
+    --resource-group $RESOURCE_GROUP \
+    --name $AKS_CLUSTER_NAME
+#test cluster working or not
+kubectl get nodes
+
+#get namespace
+kubectl get namespace
+
+#create namespace
+kubectl create namespace ratingsapp
+
+#create container registry
+ACR_NAME=acr$RANDOM
+
+az acr create \
+    --resource-group $RESOURCE_GROUP \
+    --location $REGION_NAME \
+    --name $ACR_NAME \
+    --sku Standard
+
+#Build the ratings-api image
+
+git clone https://github.com/MicrosoftDocs/mslearn-aks-workshop-ratings-api.git
+
+cd mslearn-aks-workshop-ratings-api
+
+az acr build \
+    --resource-group $RESOURCE_GROUP \
+    --registry $ACR_NAME \
+    --image ratings-api:v1 .
+
+#Build the ratings-web image
+
+cd ~
+git clone https://github.com/MicrosoftDocs/mslearn-aks-workshop-ratings-web.git
+cd mslearn-aks-workshop-ratings-web
+
+az acr build \
+    --resource-group $RESOURCE_GROUP \
+    --registry $ACR_NAME \
+    --image ratings-web:v1 .
+
+#Verify the images
+az acr repository list \
+    --name $ACR_NAME \
+    --output table
+
+
+#Configure the AKS cluster to authenticate to the container registry
+az aks update \
+    --name $AKS_CLUSTER_NAME \
+    --resource-group $RESOURCE_GROUP \
+    --attach-acr $ACR_NAME
+                #Deploy MongoDB
+#Add the Helm bitnami repository /// The Helm client is already installed in Azure Cloud Shell and can be run with the helm command. Helm provides a standard repository of charts for many different software packages. Helm has a chart for MongoDB that is part of the official Helm bitnami charts repository.
+#Configure the Helm client to use the stable repository
+helm repo add bitnami https://charts.bitnami.com/bitnami
+
+#list the charts to install
+helm search repo bitnami
+
+#nstall the MonogoDB instance /// edit the username and password
+helm install ratings bitnami/mongodb \
+    --namespace ratingsapp \
+    --set auth.username=<username>,auth.password=<password>,auth.database=ratingsdb
+#Create a Kubernetes secret to hold the MongoDB details
+kubectl create secret generic mongosecret \
+    --namespace ratingsapp \
+    --from-literal=MONGOCONNECTION="mongodb://<username>:<password>@ratings-mongodb.ratingsapp:27017/ratingsdb"
+
+#validate that the secret
+kubectl describe secret mongosecret --namespace ratingsapp
+
+            #DEPLOY APPS TO AKS
+#Create a manifest file for the Kubernetes deployment RATINGSAPI
+code ratings-api-deployment.yaml
+nano ratings-api-deployment.yaml  #dosyalarda yamlfile var/ acr ismi update edilecek
+
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-api-deployment.yaml
+
+kubectl get pods \
+    --namespace ratingsapp \
+    -l app=ratings-api -w
+
+kubectl get deployment ratings-api --namespace ratingsapp
+
+#Create a Kubernetes service for the ratings API service
+
+code ratings-api-service.yaml
+nano ratings-api-service.yaml
+
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-api-service.yaml
+
+kubectl get service ratings-api --namespace ratingsapp
+kubectl get endpoints ratings-api --namespace ratingsapp
+        #Deploy the ratings front end
+
+code ratings-web-deployment.yaml
+nano ratings-web-deployment.yaml
+
+kubectl apply \
+--namespace ratingsapp \
+-f ratings-web-deployment.yaml
+
+        #create service for web
+code ratings-web-service.yaml
+nano ratings-web-service.yaml
+
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-web-service.yaml
+
+kubectl get service ratings-web --namespace ratingsapp -w
+
+        #Deploy an ingress for the front end
+kubectl create namespace ingress
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+helm install nginx-ingress ingress-nginx/ingress-nginx \
+    --namespace ingress \
+    --set controller.replicaCount=2 \
+    --set controller.nodeSelector."beta\.kubernetes\.io/os"=linux \
+    --set defaultBackend.nodeSelector."beta\.kubernetes\.io/os"=linux
+kubectl get services --namespace ingress -w
+
+        #Reconfigure the ratings web service to use ClusterIP
+code ratings-web-service.yaml
+nano ratings-web-service.yaml
+
+kubectl delete service \
+    --namespace ratingsapp \
+    ratings-web
+
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-web-service.yaml
+
+            #Create an Ingress resource for the ratings web service
+code ratings-web-ingress.yaml
+nano ratings-web-ingress.yaml
+
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-web-ingress.yaml \
+    --validate=false
+
+            #Enable SSL/TLS on the front-end ingress
+kubectl create namespace cert-manager
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.7.2/cert-manager.crds.yaml
+
+helm install cert-manager \
+    --namespace cert-manager \
+    --version v1.7.2 \
+    jetstack/cert-manager
+
+        #Deploy a ClusterIssuer resource for Let's Encrypt
+code cluster-issuer.yaml
+nano cluster-issuer.yaml
+
+kubectl apply \
+    --namespace ratingsapp \
+    -f cluster-issuer.yaml
+
+            #Enable SSL/TLS for the ratings web service on Ingress
+code ratings-web-ingress.yaml
+nano ratings-web-ingress.yaml
+
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-web-ingress.yaml
+
+kubectl describe cert ratings-web-cert --namespace ratingsapp
+
+            #Create the horizontal pod autoscaler
+code ratings-api-hpa.yaml
+nano ratings-api-hpa.yaml
+
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-api-hpa.yaml
+
+        #LOADTEST
+LOADTEST_API_ENDPOINT=https://https://frontend.20-103-60-169.nip.io/api/loadtest
+
+az container create \
+    -g $RESOURCE_GROUP \
+    -n loadtest \
+    --cpu 4 \
+    --memory 1 \
+    --image azch/artillery \
+    --restart-policy Never \
+    --command-line "artillery quick -r 1000 -d 300 $LOADTEST_API_ENDPOINT"
+
+kubectl get hpa \
+  --namespace ratingsapp -w
