@@ -166,8 +166,161 @@ kubectl create secret generic mongosecret \
 ### Deployment yaml dosyasının oluşturulması
 nano ratings-api-deployment.yaml
   
-[ratings-api-deployment.yaml](ratings-api-deployment.yaml)
+[ratings-api-deployment.yaml](https://github.com/metehankucukcakir/AKS-Workshop-TR/blob/master/Yaml%20Files/ratings-api-deployment.yaml)
 ### Deployment
 kubectl apply \
     --namespace ratingsapp \
     -f ratings-api-deployment.yaml
+### Kontrol
+kubectl get pods \
+    --namespace ratingsapp \
+    -l app=ratings-api -w
+### Service oluşturulması
+nano ratings-api-service.yaml
+    
+[ratings-api-service.yaml](https://github.com/metehankucukcakir/AKS-Workshop-TR/blob/master/Yaml%20Files/ratings-api-service.yaml)
+### Deployment
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-api-service.yaml
+### Kontrol
+kubectl get service ratings-api --namespace ratingsapp
+    
+kubectl get endpoints ratings-api --namespace ratingsapp
+
+## WEB'in Deploy Edilmesi
+### Deployment yaml dosyasının oluşturulması
+nano ratings-web-deployment.yaml
+  
+[ratings-web-deployment.yaml](https://github.com/metehankucukcakir/AKS-Workshop-TR/blob/master/Yaml%20Files/ratings-web-deployment.yaml)
+### Deployment
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-web-deployment.yaml
+### Kontrol
+kubectl get pods \
+    --namespace ratingsapp \
+    -l app=ratings-web-deployment -w
+### Service oluşturulması
+nano ratings-web-service.yaml
+    
+[ratings-web-service.yaml](https://github.com/metehankucukcakir/AKS-Workshop-TR/blob/master/Yaml%20Files/ratings-web-service.yaml)
+### Deployment
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-web-service.yaml
+### Kontrol
+kubectl get service ratings-web --namespace ratingsapp
+    
+kubectl get endpoints ratings-web --namespace ratingsapp
+### Uygulamanın Test Edilmesi
+ratings-web isimli servisin public IP'sine doğrudan gidilir.
+
+## 4- Ingress Deploymentı
+### Namespace Oluşturulması
+kubectl create namespace ingress
+### Helm client eklenmesi
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+### Nginx kurulumu
+helm install nginx-ingress ingress-nginx/ingress-nginx \
+    --namespace ingress \
+    --set controller.replicaCount=2 \
+    --set controller.nodeSelector."beta\.kubernetes\.io/os"=linux \
+    --set defaultBackend.nodeSelector."beta\.kubernetes\.io/os"=linux
+### Public IP adresi
+kubectl get services --namespace ingress -w
+### Web servisinin tekrar düzenlenmesi
+nano ratings-web-service.yaml
+
+kubectl delete service \
+    --namespace ratingsapp \
+    ratings-web
+
+[ratings-web-service.yaml](https://github.com/metehankucukcakir/AKS-Workshop-TR/blob/master/Yaml%20Files/updated-ratings-web-service.yaml)
+
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-web-service.yaml
+    
+### Web servisi için ingress oluşturulması
+nano ratings-web-ingress.yaml
+    
+[ratings-web-ingress.yaml](https://github.com/metehankucukcakir/AKS-Workshop-TR/blob/master/Yaml%20Files/ratings-web-ingress.yaml)
+ 
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-web-ingress.yaml \
+    --validate=false
+
+### Ingressin test edilmesi
+http://frontend.13.68.177.68.nip.io
+
+## 5- TLS/SSL Konfigürasyonu
+### Cert-manager oluşturulması
+kubectl create namespace cert-manager
+    
+helm repo add jetstack https://charts.jetstack.io
+    
+helm repo update
+    
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.7.2/cert-manager.crds.yaml
+
+helm install cert-manager \
+    --namespace cert-manager \
+    --version v1.7.2 \
+    jetstack/cert-manager
+
+#### Lets Encrypt için ClusterIssuer oluşturulması
+nano cluster-issuer.yaml
+    
+[cluster-issuer.yaml](https://github.com/metehankucukcakir/AKS-Workshop-TR/blob/master/Yaml%20Files/cluster-issuer.yaml)
+
+kubectl apply \
+    --namespace ratingsapp \
+    -f cluster-issuer.yaml
+#### Web servisi için SSL/TLS'i aktif etme
+
+nano ratings-web-ingress.yaml
+
+[ratings-web-ingress.yaml](https://github.com/metehankucukcakir/AKS-Workshop-TR/blob/master/Yaml%20Files/updated-ratings-web-ingress.yaml)
+    
+kubectl apply \
+    --namespace ratingsapp \
+    -f ratings-web-ingress.yaml
+
+kubectl describe cert ratings-web-cert --namespace ratingsapp
+### Test
+https://frontend.13.68.177.68.nip.io
+
+## 6- Scale
+#### Horizontal pod autoscaler
+Horizontal pod autoscaler (HPA) denetleyicisi, Kubernetes denetleyici yöneticisinin bir HorizontalPodAutoscaler tanımında belirtilen metriklere göre kaynak kullanımını sorgulamasına olanak tanıyan Kubernetes kontrol döngüsüdür. 
+    
+HPA, hesaplanan değere göre pod sayısını otomatik olarak yukarı veya aşağı ölçeklendirir.
+
+### HPA oluşturma
+
+nano ratings-api-hpa.yaml
+    
+[ratings-api-hpa.yaml](https://github.com/metehankucukcakir/AKS-Workshop-TR/blob/master/Yaml%20Files/ratings-api-hpa.yaml)
+  
+### Yük testi
+az container create \
+    -g $RESOURCE_GROUP \
+    -n loadtest \
+    --cpu 4 \
+    --memory 1 \
+    --image azch/artillery \
+    --restart-policy Never \
+    --command-line "artillery quick -r 1000 -d 300 $LOADTEST_API_ENDPOINT"
+    
+kubectl get hpa \
+  --namespace ratingsapp -w
+    
+    
+    
+## Referanslar
+Bu içerik, Microsoft Learn sayfası referans alınarak değiştirilmiş/Türkçeleştirilmiştir.
+    
+[Azure Kubernetes Service Workshop](https://docs.microsoft.com/en-us/learn/modules/aks-workshop/)
