@@ -393,6 +393,9 @@ nano ratings-api-hpa.yaml
   
 ### Yük testi
 ```
+LOADTEST_API_ENDPOINT=https://https://frontend.20-103-60-169.nip.io/api/loadtest
+```
+```
 az container create \
     -g $RESOURCE_GROUP \
     -n loadtest \
